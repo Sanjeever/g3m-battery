@@ -64,12 +64,14 @@ const (
 	mfString       = 0x00000000
 	mfGrayed       = 0x00000001
 	mfDisabled     = 0x00000002
+	mfChecked      = 0x00000008
 	mfSeparator    = 0x00000800
 	tpmRetCommand  = 0x00000100
 	tpmRightButton = 0x00000002
 
 	menuRefresh = 1001
 	menuExit    = 1002
+	menuStartup = 1003
 )
 
 type point struct {
@@ -142,6 +144,7 @@ type trayApp struct {
 	current            BatteryState
 	pending            BatteryState
 	lowBatteryNotified bool
+	startupEnabled     bool
 }
 
 var activeTray *trayApp
@@ -172,14 +175,19 @@ func newTray(logger *log.Logger, onRefresh func()) (*trayApp, error) {
 	if atom == 0 && callErr != syscall.Errno(1410) { // ERROR_CLASS_ALREADY_EXISTS
 		return nil, fmt.Errorf("RegisterClassExW: %w", callErr)
 	}
+	startupEnabled, startupErr := readStartupEnabled()
+	if startupErr != nil {
+		logger.Printf("读取开机启动状态失败: %v", startupErr)
+	}
 
 	tray := &trayApp{
-		logger:    logger,
-		hInstance: syscall.Handle(instance),
-		className: className,
-		onRefresh: onRefresh,
-		current:   BatteryState{Percent: -1, Error: "未连接"},
-		pending:   BatteryState{Percent: -1, Error: "未连接"},
+		logger:         logger,
+		hInstance:      syscall.Handle(instance),
+		className:      className,
+		onRefresh:      onRefresh,
+		current:        BatteryState{Percent: -1, Error: "未连接"},
+		pending:        BatteryState{Percent: -1, Error: "未连接"},
+		startupEnabled: startupEnabled,
 	}
 	activeTray = tray
 
@@ -403,6 +411,12 @@ func (t *trayApp) showMenu() {
 		appendMenuW.Call(menu, mfString|mfGrayed|mfDisabled, uintptr(menuRefresh+10), uintptr(unsafe.Pointer(&text[0])))
 	}
 	appendMenuW.Call(menu, mfSeparator, 0, 0)
+	startupFlags := uint32(mfString)
+	if t.startupEnabled {
+		startupFlags |= mfChecked
+	}
+	startupText, _ := syscall.UTF16FromString("开机启动")
+	appendMenuW.Call(menu, uintptr(startupFlags), menuStartup, uintptr(unsafe.Pointer(&startupText[0])))
 	refreshText, _ := syscall.UTF16FromString("立即刷新")
 	appendMenuW.Call(menu, mfString, menuRefresh, uintptr(unsafe.Pointer(&refreshText[0])))
 	exitText, _ := syscall.UTF16FromString("退出")
@@ -423,6 +437,20 @@ func (t *trayApp) showMenu() {
 	postMessageW.Call(uintptr(t.hwnd), wmNull, 0, 0)
 
 	switch uint32(selected) {
+	case menuStartup:
+		if t.startupEnabled {
+			if err := disableStartup(); err != nil {
+				t.logger.Printf("关闭开机启动失败: %v", err)
+				return
+			}
+			t.startupEnabled = false
+		} else {
+			if err := enableStartup(); err != nil {
+				t.logger.Printf("开启开机启动失败: %v", err)
+				return
+			}
+			t.startupEnabled = true
+		}
 	case menuRefresh:
 		if t.onRefresh != nil {
 			t.onRefresh()
