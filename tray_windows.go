@@ -11,35 +11,43 @@ import (
 )
 
 var (
-	shell32TrayDLL      = syscall.NewLazyDLL("shell32.dll")
-	registerClassExW    = user32IconDLL.NewProc("RegisterClassExW")
-	getModuleHandleW    = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
-	createWindowExW     = user32IconDLL.NewProc("CreateWindowExW")
-	destroyWindow       = user32IconDLL.NewProc("DestroyWindow")
-	unregisterClassW    = user32IconDLL.NewProc("UnregisterClassW")
-	getMessageW         = user32IconDLL.NewProc("GetMessageW")
-	translateMessage    = user32IconDLL.NewProc("TranslateMessage")
-	dispatchMessageW    = user32IconDLL.NewProc("DispatchMessageW")
-	defWindowProcW      = user32IconDLL.NewProc("DefWindowProcW")
-	postMessageW        = user32IconDLL.NewProc("PostMessageW")
-	postQuitMessage     = user32IconDLL.NewProc("PostQuitMessage")
-	getCursorPos        = user32IconDLL.NewProc("GetCursorPos")
-	setForegroundWindow = user32IconDLL.NewProc("SetForegroundWindow")
-	createPopupMenu     = user32IconDLL.NewProc("CreatePopupMenu")
-	appendMenuW         = user32IconDLL.NewProc("AppendMenuW")
-	trackPopupMenu      = user32IconDLL.NewProc("TrackPopupMenu")
-	destroyMenu         = user32IconDLL.NewProc("DestroyMenu")
-	shellNotifyIconW    = shell32TrayDLL.NewProc("Shell_NotifyIconW")
+	shell32TrayDLL               = syscall.NewLazyDLL("shell32.dll")
+	registerClassExW             = user32IconDLL.NewProc("RegisterClassExW")
+	getModuleHandleW             = syscall.NewLazyDLL("kernel32.dll").NewProc("GetModuleHandleW")
+	createWindowExW              = user32IconDLL.NewProc("CreateWindowExW")
+	destroyWindow                = user32IconDLL.NewProc("DestroyWindow")
+	unregisterClassW             = user32IconDLL.NewProc("UnregisterClassW")
+	getMessageW                  = user32IconDLL.NewProc("GetMessageW")
+	translateMessage             = user32IconDLL.NewProc("TranslateMessage")
+	dispatchMessageW             = user32IconDLL.NewProc("DispatchMessageW")
+	defWindowProcW               = user32IconDLL.NewProc("DefWindowProcW")
+	postMessageW                 = user32IconDLL.NewProc("PostMessageW")
+	postQuitMessage              = user32IconDLL.NewProc("PostQuitMessage")
+	getCursorPos                 = user32IconDLL.NewProc("GetCursorPos")
+	setForegroundWindow          = user32IconDLL.NewProc("SetForegroundWindow")
+	registerDeviceNotificationW  = user32IconDLL.NewProc("RegisterDeviceNotificationW")
+	unregisterDeviceNotification = user32IconDLL.NewProc("UnregisterDeviceNotification")
+	createPopupMenu              = user32IconDLL.NewProc("CreatePopupMenu")
+	appendMenuW                  = user32IconDLL.NewProc("AppendMenuW")
+	trackPopupMenu               = user32IconDLL.NewProc("TrackPopupMenu")
+	destroyMenu                  = user32IconDLL.NewProc("DestroyMenu")
+	shellNotifyIconW             = shell32TrayDLL.NewProc("Shell_NotifyIconW")
 )
 
 const (
-	wmDestroy     = 0x0002
-	wmNull        = 0x0000
-	wmTrayIcon    = 0x8001
-	wmTrayUpdate  = 0x8002
-	wmContextMenu = 0x007B
-	wmLButtonUp   = 0x0202
-	wmRButtonUp   = 0x0205
+	wmDestroy      = 0x0002
+	wmNull         = 0x0000
+	wmTrayIcon     = 0x8001
+	wmTrayUpdate   = 0x8002
+	wmContextMenu  = 0x007B
+	wmDeviceChange = 0x0219
+	wmLButtonUp    = 0x0202
+	wmRButtonUp    = 0x0205
+
+	dbtDeviceArrival          = 0x8000
+	dbtDeviceRemoveComplete   = 0x8004
+	dbtDevTypeDeviceInterface = 0x00000005
+	deviceNotifyWindowHandle  = 0x00000000
 
 	nimAdd             = 0x00000000
 	nimModify          = 0x00000001
@@ -48,8 +56,10 @@ const (
 	nifMessage         = 0x00000001
 	nifIcon            = 0x00000002
 	nifTip             = 0x00000004
+	nifInfo            = 0x00000010
 	nifShowTip         = 0x00000080
 	notifyIconVersion4 = 4
+	niifWarning        = 0x00000002
 
 	mfString       = 0x00000000
 	mfGrayed       = 0x00000001
@@ -111,17 +121,27 @@ type notifyIconData struct {
 	BalloonIcon      syscall.Handle
 }
 
-type trayApp struct {
-	logger    *log.Logger
-	hwnd      syscall.Handle
-	hInstance syscall.Handle
-	className *uint16
-	icon      syscall.Handle
-	onRefresh func()
+type devBroadcastDeviceInterface struct {
+	Size       uint32
+	DeviceType uint32
+	Reserved   uint32
+	ClassGUID  syscall.GUID
+	Name       [1]uint16
+}
 
-	mu      sync.Mutex
-	current BatteryState
-	pending BatteryState
+type trayApp struct {
+	logger       *log.Logger
+	hwnd         syscall.Handle
+	hInstance    syscall.Handle
+	className    *uint16
+	icon         syscall.Handle
+	deviceNotify syscall.Handle
+	onRefresh    func()
+
+	mu                 sync.Mutex
+	current            BatteryState
+	pending            BatteryState
+	lowBatteryNotified bool
 }
 
 var activeTray *trayApp
@@ -180,7 +200,13 @@ func newTray(logger *log.Logger, onRefresh func()) (*trayApp, error) {
 	}
 	tray.hwnd = syscall.Handle(hwnd)
 
+	if err := tray.registerDeviceNotifications(); err != nil {
+		destroyWindow.Call(hwnd)
+		activeTray = nil
+		return nil, err
+	}
 	if err := tray.addIcon(tray.current); err != nil {
+		tray.unregisterDeviceNotifications()
 		destroyWindow.Call(hwnd)
 		activeTray = nil
 		return nil, err
@@ -203,6 +229,7 @@ func (t *trayApp) run() {
 		dispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 	}
 
+	t.unregisterDeviceNotifications()
 	t.removeIcon()
 	destroyWindow.Call(uintptr(t.hwnd))
 	unregisterClassW.Call(uintptr(unsafe.Pointer(t.className)), uintptr(t.hInstance))
@@ -224,6 +251,36 @@ func (t *trayApp) applyPendingState() {
 	t.current = state
 	t.mu.Unlock()
 	t.updateIcon(state)
+	t.updateLowBatteryNotification(state)
+}
+
+func (t *trayApp) registerDeviceNotifications() error {
+	var hidGUID syscall.GUID
+	hidDGetHidGuid.Call(uintptr(unsafe.Pointer(&hidGUID)))
+
+	filter := devBroadcastDeviceInterface{
+		Size:       uint32(unsafe.Sizeof(devBroadcastDeviceInterface{})),
+		DeviceType: dbtDevTypeDeviceInterface,
+		ClassGUID:  hidGUID,
+	}
+	handle, _, callErr := registerDeviceNotificationW.Call(
+		uintptr(t.hwnd),
+		uintptr(unsafe.Pointer(&filter)),
+		deviceNotifyWindowHandle,
+	)
+	if handle == 0 {
+		return fmt.Errorf("RegisterDeviceNotificationW: %w", callErr)
+	}
+	t.deviceNotify = syscall.Handle(handle)
+	return nil
+}
+
+func (t *trayApp) unregisterDeviceNotifications() {
+	if t.deviceNotify == 0 {
+		return
+	}
+	unregisterDeviceNotification.Call(uintptr(t.deviceNotify))
+	t.deviceNotify = 0
 }
 
 func (t *trayApp) addIcon(state BatteryState) error {
@@ -266,6 +323,40 @@ func (t *trayApp) updateIcon(state BatteryState) {
 	if oldIcon != 0 {
 		destroyIcon.Call(uintptr(oldIcon))
 	}
+}
+
+const lowBatteryThreshold = 20
+
+func (t *trayApp) updateLowBatteryNotification(state BatteryState) {
+	if state.Error != "" || state.Percent < 0 {
+		return
+	}
+	if state.Percent >= lowBatteryThreshold || state.Charge == ChargeCharging || state.Charge == ChargeFull {
+		t.lowBatteryNotified = false
+		return
+	}
+	if t.lowBatteryNotified {
+		return
+	}
+
+	data := t.makeNotifyData(t.icon, state.tooltip())
+	data.UFlags |= nifInfo
+	title, _ := syscall.UTF16FromString("G3M Pro 电量低")
+	info, _ := syscall.UTF16FromString(fmt.Sprintf(
+		"当前电量：%d%%，连接：%s。请及时充电。",
+		state.Percent,
+		state.transportText(),
+	))
+	copy(data.InfoTitle[:], title)
+	copy(data.Info[:], info)
+	data.InfoFlags = niifWarning
+
+	ret, _, callErr := shellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&data)))
+	if ret == 0 {
+		t.logger.Printf("Shell_NotifyIconW(NIF_INFO): %v", callErr)
+		return
+	}
+	t.lowBatteryNotified = true
 }
 
 func (t *trayApp) removeIcon() {
@@ -346,6 +437,14 @@ func windowProc(hwnd uintptr, message uint32, wParam, lParam uintptr) uintptr {
 		switch message {
 		case wmTrayUpdate:
 			activeTray.applyPendingState()
+			return 0
+		case wmDeviceChange:
+			switch uint32(wParam) {
+			case dbtDeviceArrival, dbtDeviceRemoveComplete:
+				if activeTray.onRefresh != nil {
+					activeTray.onRefresh()
+				}
+			}
 			return 0
 		case wmTrayIcon:
 			notifyEvent := uint32(lParam & 0xFFFF)
