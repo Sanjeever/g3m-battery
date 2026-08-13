@@ -1,0 +1,24 @@
+# Go / Windows 构建产物
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+/bin/
+/dist/
+
+# Go 覆盖率文件
+coverage.out
+
+# 编辑器和 IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Windows / macOS 临时文件
+Thumbs.db
+desktop.ini
+.DS_Store
