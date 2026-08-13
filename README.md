@@ -122,21 +122,21 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 
 | 文件 | 作用 |
 | --- | --- |
-| `hid_windows.go` | 枚举 HID 接口、筛选设备、发送查询并读取响应 |
-| `battery_state_windows.go` | 保存查询结果、映射连接方式和标准化充电状态 |
-| `main_windows.go` | 启动托盘、定时轮询并协调刷新消息 |
-| `tray_windows.go` | 创建 Windows 隐藏窗口、托盘图标、Tooltip 和右键菜单 |
-| `icon_windows.go` | 根据 `BatteryState` 动态绘制电池图标 |
-| `startup_windows.go` | 读写当前用户的开机启动注册表项 |
-| `version_windows.go` / `VERSION` | 嵌入并显示软件版本号 |
-| `logo_windows_*.syso` | 将 `logo.ico` 作为 Windows 程序资源编入不同架构的可执行文件 |
+| `cmd/g3m-battery/hid_windows.go` | 枚举 HID 接口、筛选设备、发送查询并读取响应 |
+| `cmd/g3m-battery/battery_state_windows.go` | 保存查询结果、映射连接方式和标准化充电状态 |
+| `cmd/g3m-battery/main_windows.go` | 启动托盘、定时轮询并协调刷新消息 |
+| `cmd/g3m-battery/tray_windows.go` | 创建 Windows 隐藏窗口、托盘图标、Tooltip 和右键菜单 |
+| `cmd/g3m-battery/icon_windows.go` | 根据 `BatteryState` 动态绘制电池图标 |
+| `cmd/g3m-battery/startup_windows.go` | 读写当前用户的开机启动注册表项 |
+| `cmd/g3m-battery/version_windows.go` / `cmd/g3m-battery/VERSION` | 嵌入并显示软件版本号 |
+| `cmd/g3m-battery/logo_windows_*.syso` | 将 `assets/logo.ico` 作为 Windows 程序资源编入不同架构的可执行文件 |
 
 ## 构建
 
 项目当前仅支持 Windows，使用 Go `1.25` 或兼容版本。在 Windows 上执行：
 
 ```text
-go build -trimpath -ldflags="-H=windowsgui" -o g3m-battery.exe .
+go build -trimpath -ldflags="-H=windowsgui" -o g3m-battery.exe ./cmd/g3m-battery
 ```
 
 生成的 `g3m-battery.exe` 可以直接运行。程序不需要管理员权限，也不需要安装 HECATE Connect。

@@ -33,7 +33,7 @@ jobs:
           $env:GOOS = "windows"
           $env:CGO_ENABLED = "0"
           $output = "g3m-battery-windows-${env:GOARCH}.exe"
-          go build -trimpath -ldflags="-H=windowsgui" -o $output .
+          go build -trimpath -ldflags="-H=windowsgui" -o $output ./cmd/g3m-battery
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v7
