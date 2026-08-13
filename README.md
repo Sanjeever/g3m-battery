@@ -37,7 +37,7 @@ Usage       0x0092
 在 Windows 上执行：
 
 ```text
-go build -ldflags="-H=windowsgui" -trimpath -o g3m-battery-tray.exe .
+go build -ldflags="-H=windowsgui" -trimpath -o g3m-battery.exe .
 ```
 
-生成的 `g3m-battery-tray.exe` 可以直接运行。程序不需要管理员权限。
+生成的 `g3m-battery.exe` 可以直接运行。程序不需要管理员权限。
