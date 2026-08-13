@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build Windows ${{ matrix.goarch }}
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        shell: pwsh
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          $env:GOOS = "windows"
+          $env:CGO_ENABLED = "0"
+          $output = "g3m-battery-windows-${env:GOARCH}.exe"
+          go build -trimpath -ldflags="-H=windowsgui" -o $output .
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: g3m-battery-windows-${{ matrix.goarch }}
+          path: g3m-battery-windows-${{ matrix.goarch }}.exe
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: dist
+          pattern: g3m-battery-windows-*
+          merge-multiple: true
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          gh release create "$TAG_NAME" dist/*.exe \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "G3M Battery $TAG_NAME" \
+            --generate-notes
