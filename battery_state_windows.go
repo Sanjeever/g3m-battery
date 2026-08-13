@@ -93,19 +93,20 @@ func (s BatteryState) tooltip() string {
 }
 
 func (s BatteryState) menuLines() []string {
+	lines := []string{"版本：" + applicationVersion()}
 	if s.Error != "" {
 		if s.Percent >= 0 {
-			return []string{
+			return append(lines,
 				fmt.Sprintf("电量：%d%%", s.Percent),
 				"连接：" + s.transportText(),
 				"状态：" + s.Error,
-			}
+			)
 		}
-		return []string{"G3M Pro：" + s.Error}
+		return append(lines, "G3M Pro："+s.Error)
 	}
-	return []string{
+	return append(lines,
 		fmt.Sprintf("电量：%d%%", s.Percent),
 		"连接：" + s.transportText(),
 		"状态：" + s.chargeText(),
-	}
+	)
 }
