@@ -49,8 +49,11 @@ func decodeChargeState(percent int, flag byte, transport Transport) ChargeState 
 	case 0x02:
 		return ChargeCharging
 	case 0x01:
-		if transport == TransportWired && percent == 100 {
-			return ChargeFull
+		if transport == TransportWired {
+			if percent == 100 {
+				return ChargeFull
+			}
+			return ChargeCharging
 		}
 	case 0x00:
 		return ChargeNormal
