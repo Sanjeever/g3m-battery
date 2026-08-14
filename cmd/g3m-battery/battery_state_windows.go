@@ -24,11 +24,22 @@ const (
 	ChargeNormal
 )
 
+type ErrorKind int
+
+const (
+	ErrorNone ErrorKind = iota
+	ErrorNoDevice
+	ErrorEnumerate
+	ErrorRead
+	ErrorUnknown
+)
+
 type BatteryState struct {
 	Percent   int
 	RawFlag   byte
 	Transport Transport
 	Charge    ChargeState
+	ErrorKind ErrorKind
 	UpdatedAt time.Time
 	Error     string
 }
@@ -95,7 +106,7 @@ func (s BatteryState) tooltip() string {
 	return fmt.Sprintf("G3M Pro · %d%% · %s · %s", s.Percent, s.transportText(), s.chargeText())
 }
 
-func (s BatteryState) menuLines() []string {
+func (s BatteryState) menuLines(remainingText string) []string {
 	lines := []string{"版本：" + applicationVersion()}
 	if s.Error != "" {
 		if s.Percent >= 0 {
@@ -111,5 +122,6 @@ func (s BatteryState) menuLines() []string {
 		fmt.Sprintf("电量：%d%%", s.Percent),
 		"连接：" + s.transportText(),
 		"状态：" + s.chargeText(),
+		"预计剩余使用时间：" + remainingText,
 	)
 }

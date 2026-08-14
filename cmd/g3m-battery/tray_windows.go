@@ -72,6 +72,7 @@ const (
 	menuRefresh = 1001
 	menuExit    = 1002
 	menuStartup = 1003
+	menuHistory = 1004
 )
 
 type point struct {
@@ -139,6 +140,8 @@ type trayApp struct {
 	icon         syscall.Handle
 	deviceNotify syscall.Handle
 	onRefresh    func()
+	onHistory    func()
+	onRemaining  func(BatteryState) string
 
 	mu                 sync.Mutex
 	current            BatteryState
@@ -150,7 +153,7 @@ type trayApp struct {
 var activeTray *trayApp
 var trayWindowProc = syscall.NewCallback(windowProc)
 
-func newTray(logger *log.Logger, onRefresh func()) (*trayApp, error) {
+func newTray(logger *log.Logger, onRefresh, onHistory func(), onRemaining func(BatteryState) string) (*trayApp, error) {
 	className, err := syscall.UTF16PtrFromString("G3MBatteryTrayWindow")
 	if err != nil {
 		return nil, err
@@ -185,6 +188,8 @@ func newTray(logger *log.Logger, onRefresh func()) (*trayApp, error) {
 		hInstance:      syscall.Handle(instance),
 		className:      className,
 		onRefresh:      onRefresh,
+		onHistory:      onHistory,
+		onRemaining:    onRemaining,
 		current:        BatteryState{Percent: -1, Error: "未连接"},
 		pending:        BatteryState{Percent: -1, Error: "未连接"},
 		startupEnabled: startupEnabled,
@@ -406,7 +411,11 @@ func (t *trayApp) showMenu() {
 	}
 	defer destroyMenu.Call(menu)
 
-	for _, line := range state.menuLines() {
+	remainingText := "暂无估算"
+	if t.onRemaining != nil {
+		remainingText = t.onRemaining(state)
+	}
+	for _, line := range state.menuLines(remainingText) {
 		text, _ := syscall.UTF16FromString(line)
 		appendMenuW.Call(menu, mfString|mfGrayed|mfDisabled, uintptr(menuRefresh+10), uintptr(unsafe.Pointer(&text[0])))
 	}
@@ -419,6 +428,8 @@ func (t *trayApp) showMenu() {
 	appendMenuW.Call(menu, uintptr(startupFlags), menuStartup, uintptr(unsafe.Pointer(&startupText[0])))
 	refreshText, _ := syscall.UTF16FromString("立即刷新")
 	appendMenuW.Call(menu, mfString, menuRefresh, uintptr(unsafe.Pointer(&refreshText[0])))
+	historyText, _ := syscall.UTF16FromString("电量历史")
+	appendMenuW.Call(menu, mfString, menuHistory, uintptr(unsafe.Pointer(&historyText[0])))
 	exitText, _ := syscall.UTF16FromString("退出")
 	appendMenuW.Call(menu, mfString, menuExit, uintptr(unsafe.Pointer(&exitText[0])))
 
@@ -454,6 +465,10 @@ func (t *trayApp) showMenu() {
 	case menuRefresh:
 		if t.onRefresh != nil {
 			t.onRefresh()
+		}
+	case menuHistory:
+		if t.onHistory != nil {
+			t.onHistory()
 		}
 	case menuExit:
 		postQuitMessage.Call(0)

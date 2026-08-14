@@ -30,17 +30,43 @@ func main() {
 	refresh := make(chan struct{}, 1)
 	stop := make(chan struct{})
 
+	history, historyErr := newHistoryStore()
+	if historyErr != nil {
+		logger.Printf("初始化历史记录失败: %v", historyErr)
+	}
+
 	tray, err := newTray(logger, func() {
 		select {
 		case refresh <- struct{}{}:
 		default:
 		}
+	}, func() {
+		if history == nil {
+			logger.Printf("历史记录不可用")
+			return
+		}
+		if err := history.openReport(); err != nil {
+			logger.Printf("打开电量历史失败: %v", err)
+		}
+	}, func(state BatteryState) string {
+		if history == nil {
+			return "暂无估算"
+		}
+		return history.remainingText(state)
 	})
 	if err != nil {
 		logger.Fatal(err)
 	}
 
-	go monitorLoop(stop, refresh, tray.setState, logger)
+	publish := func(state BatteryState) {
+		if history != nil {
+			if err := history.record(state); err != nil {
+				logger.Printf("记录电量历史失败: %v", err)
+			}
+		}
+		tray.setState(state)
+	}
+	go monitorLoop(stop, refresh, publish, logger)
 
 	tray.run()
 	close(stop)
@@ -93,11 +119,13 @@ func pollAndPublish(publish func(BatteryState), logger *log.Logger) {
 
 	candidates, err := enumerateCandidates()
 	if err != nil {
+		state.ErrorKind = ErrorEnumerate
 		state.Error = err.Error()
 		publish(state)
 		return
 	}
 	if len(candidates) == 0 {
+		state.ErrorKind = ErrorNoDevice
 		state.Error = "未找到 G3M PRO HID 厂商集合"
 		publish(state)
 		return
@@ -117,6 +145,7 @@ func pollAndPublish(publish func(BatteryState), logger *log.Logger) {
 			RawFlag:   flag,
 			Transport: transport,
 			Charge:    decodeChargeState(percent, flag, transport),
+			ErrorKind: ErrorNone,
 			UpdatedAt: time.Now(),
 		}
 		publish(state)
@@ -124,8 +153,10 @@ func pollAndPublish(publish func(BatteryState), logger *log.Logger) {
 	}
 
 	if lastErr != nil {
+		state.ErrorKind = ErrorRead
 		state.Error = "读取电量失败: " + lastErr.Error()
 	} else {
+		state.ErrorKind = ErrorRead
 		state.Error = "读取电量失败"
 	}
 	publish(state)
