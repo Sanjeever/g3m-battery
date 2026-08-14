@@ -5,14 +5,10 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"html"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
-	"syscall"
 	"time"
-	"unsafe"
 )
 
 const (
@@ -45,13 +41,10 @@ type historyData struct {
 }
 
 type historyStore struct {
-	mu         sync.Mutex
-	path       string
-	reportPath string
-	data       historyData
+	mu   sync.Mutex
+	path string
+	data historyData
 }
-
-var shellExecuteW = shell32TrayDLL.NewProc("ShellExecuteW")
 
 func newHistoryStore() (*historyStore, error) {
 	cacheDir, err := os.UserCacheDir()
@@ -65,8 +58,7 @@ func newHistoryStore() (*historyStore, error) {
 	}
 
 	store := &historyStore{
-		path:       filepath.Join(dataDir, "history.json"),
-		reportPath: filepath.Join(dataDir, "history.html"),
+		path: filepath.Join(dataDir, "history.json"),
 		data: historyData{
 			Version: historyDataVersion,
 		},
@@ -228,36 +220,8 @@ func (h *historyStore) remainingText(state BatteryState) string {
 	return "约 " + formatHistoryDuration(remaining)
 }
 
-func (h *historyStore) openReport() error {
-	data := h.snapshot()
-	report := renderHistoryReport(data, time.Now())
-	if err := os.WriteFile(h.reportPath, []byte(report), 0600); err != nil {
-		return fmt.Errorf("写入历史报告: %w", err)
-	}
-
-	verb, err := syscall.UTF16PtrFromString("open")
-	if err != nil {
-		return fmt.Errorf("打开历史报告动作: %w", err)
-	}
-	path, err := syscall.UTF16PtrFromString(h.reportPath)
-	if err != nil {
-		return fmt.Errorf("打开历史报告路径: %w", err)
-	}
-	result, _, callErr := shellExecuteW.Call(
-		0,
-		uintptr(unsafe.Pointer(verb)),
-		uintptr(unsafe.Pointer(path)),
-		0,
-		0,
-		1,
-	)
-	if result <= 32 {
-		if callErr != nil {
-			return fmt.Errorf("ShellExecuteW: %w", callErr)
-		}
-		return fmt.Errorf("ShellExecuteW 返回值异常: %d", result)
-	}
-	return nil
+func (h *historyStore) openHistory() error {
+	return showHistoryWindow(h)
 }
 
 func trimHistory(data *historyData, now time.Time) bool {
@@ -513,199 +477,4 @@ func formatHistoryDuration(duration time.Duration) string {
 		return fmt.Sprintf("%d 小时", hours)
 	}
 	return fmt.Sprintf("%d 小时 %d 分钟", hours, minutes)
-}
-
-func renderHistoryReport(data historyData, now time.Time) string {
-	metrics := buildHistoryMetrics(data, now)
-	status := "暂无成功读取记录"
-	if metrics.hasActiveIncident {
-		status = "异常：" + errorKindText(metrics.activeIncident.Kind)
-	} else if metrics.hasLastSample {
-		status = historySampleText(metrics.lastSample)
-	}
-
-	charging := "暂无完整充电记录"
-	if metrics.hasCurrentCharging {
-		charging = "当前充电，已观测 " + formatHistoryDuration(metrics.currentCharging)
-	} else if metrics.hasLastCharging {
-		charging = formatHistoryDuration(metrics.lastCharging)
-	}
-
-	discharge := "暂无完整记录"
-	if metrics.hasLastDischarge {
-		discharge = formatHistoryDuration(metrics.lastDischarge)
-	}
-
-	remaining := "暂无估算"
-	if metrics.hasRemaining {
-		remaining = "约 " + formatHistoryDuration(metrics.remaining)
-	}
-
-	var builder strings.Builder
-	builder.WriteString(`<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>G3M Pro 电量历史</title>
-<style>
-body { margin: 0; padding: 24px; color: #1f2937; background: #f3f6fa; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; }
-main { max-width: 960px; margin: 0 auto; }
-h1 { margin: 0 0 6px; }
-h2 { margin: 0 0 12px; font-size: 18px; }
-.muted { color: #6b7280; }
-.cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 20px 0; }
-.card, section { background: white; border: 1px solid #e5e7eb; border-radius: 10px; box-shadow: 0 1px 2px #0000000d; }
-.card { padding: 14px; min-height: 64px; }
-.card span { display: block; color: #6b7280; font-size: 13px; margin-bottom: 8px; }
-.card strong { display: block; font-size: 16px; line-height: 1.4; }
-section { padding: 18px; margin: 16px 0; overflow-x: auto; }
-svg { display: block; width: 100%; min-width: 680px; height: auto; }
-table { width: 100%; border-collapse: collapse; font-size: 14px; }
-th, td { padding: 9px 8px; border-bottom: 1px solid #edf0f3; text-align: left; vertical-align: top; }
-th { color: #6b7280; font-weight: 600; }
-.empty { color: #6b7280; padding: 12px 0; }
-@media (max-width: 760px) { .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); } body { padding: 14px; } }
-</style>
-</head>
-<body>
-<main>
-<h1>G3M Pro 电量历史</h1>
-<div class="muted">报告生成时间：`)
-	builder.WriteString(html.EscapeString(historyTime(now.Unix())))
-	builder.WriteString(`</div>
-<div class="cards">`)
-	fmt.Fprintf(&builder, "<div class=\"card\"><span>最近成功状态</span><strong>%s</strong></div>", html.EscapeString(status))
-	fmt.Fprintf(&builder, "<div class=\"card\"><span>预计剩余使用时间</span><strong>%s</strong></div>", html.EscapeString(remaining))
-	fmt.Fprintf(&builder, "<div class=\"card\"><span>最近一次充电</span><strong>%s</strong></div>", html.EscapeString(charging))
-	fmt.Fprintf(&builder, "<div class=\"card\"><span>100%% → 20%%</span><strong>%s</strong></div>", html.EscapeString(discharge))
-	builder.WriteString(`</div>
-<section>
-<h2>最近 24 小时</h2>`)
-	builder.WriteString(renderHistoryChart(data, now, 24*time.Hour))
-	builder.WriteString(`</section>
-<section>
-<h2>最近 7 天</h2>`)
-	builder.WriteString(renderHistoryChart(data, now, 7*24*time.Hour))
-	builder.WriteString(`</section>
-<section>
-<h2>断连和读取失败记录</h2>
-<table>
-<thead><tr><th>类型</th><th>开始时间</th><th>结束时间</th><th>持续时间</th><th>信息</th></tr></thead>
-<tbody>`)
-
-	if len(data.Incidents) == 0 {
-		builder.WriteString("<tr><td colspan=\"5\" class=\"empty\">没有记录</td></tr>")
-	} else {
-		count := 0
-		for index := len(data.Incidents) - 1; index >= 0 && count < 20; index-- {
-			incident := data.Incidents[index]
-			end := "-"
-			duration := "进行中"
-			if incident.EndedAt != 0 {
-				end = historyTime(incident.EndedAt)
-				duration = formatHistoryDuration(time.Duration(incident.EndedAt-incident.StartedAt) * time.Second)
-			}
-			fmt.Fprintf(
-				&builder,
-				"<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>",
-				html.EscapeString(errorKindText(incident.Kind)),
-				html.EscapeString(historyTime(incident.StartedAt)),
-				html.EscapeString(end),
-				html.EscapeString(duration),
-				html.EscapeString(incident.Message),
-			)
-			count++
-		}
-	}
-
-	builder.WriteString(`</tbody>
-</table>
-</section>
-</main>
-</body>
-</html>
-`)
-	return builder.String()
-}
-
-func renderHistoryChart(data historyData, now time.Time, window time.Duration) string {
-	const (
-		width  = 760.0
-		height = 260.0
-		left   = 48.0
-		right  = 16.0
-		top    = 20.0
-		bottom = 32.0
-	)
-	plotWidth := width - left - right
-	plotHeight := height - top - bottom
-	start := now.Add(-window)
-	startUnix := start.Unix()
-	endUnix := now.Unix()
-
-	var builder strings.Builder
-	builder.WriteString("<svg viewBox=\"0 0 760 260\" role=\"img\" aria-label=\"电量曲线\">")
-	for _, level := range []int{0, 20, 40, 60, 80, 100} {
-		y := top + (100-float64(level))/100*plotHeight
-		fmt.Fprintf(
-			&builder,
-			"<line x1=\"%.1f\" y1=\"%.1f\" x2=\"%.1f\" y2=\"%.1f\" stroke=\"#e5e7eb\"/><text x=\"6\" y=\"%.1f\" fill=\"#6b7280\" font-size=\"12\">%d%%</text>",
-			left,
-			y,
-			width-right,
-			y,
-			y+4,
-			level,
-		)
-	}
-
-	hasPoint := false
-	var path strings.Builder
-	for _, sample := range data.Samples {
-		if sample.At < startUnix || sample.At > endUnix {
-			continue
-		}
-		ratio := float64(sample.At-startUnix) / float64(endUnix-startUnix)
-		x := left + ratio*plotWidth
-		y := top + (100-float64(sample.Percent))/100*plotHeight
-		if !hasPoint {
-			fmt.Fprintf(&path, "M %.1f %.1f", x, y)
-			hasPoint = true
-		} else {
-			fmt.Fprintf(&path, " L %.1f %.1f", x, y)
-		}
-
-		fill := "#2563eb"
-		if sample.Charge == ChargeCharging {
-			fill = "#f59e0b"
-		} else if sample.Charge == ChargeFull {
-			fill = "#16a34a"
-		}
-		fmt.Fprintf(&builder, "<circle cx=\"%.1f\" cy=\"%.1f\" r=\"3\" fill=\"%s\"/>", x, y, fill)
-	}
-
-	if hasPoint {
-		fmt.Fprintf(&builder, "<path d=\"%s\" fill=\"none\" stroke=\"#2563eb\" stroke-width=\"2.5\" stroke-linejoin=\"round\" stroke-linecap=\"round\"/>", path.String())
-	} else {
-		builder.WriteString("<text x=\"380\" y=\"135\" text-anchor=\"middle\" fill=\"#6b7280\" font-size=\"14\">暂无有效采样数据</text>")
-	}
-
-	for _, incident := range data.Incidents {
-		if incident.StartedAt > endUnix || (incident.EndedAt != 0 && incident.EndedAt < startUnix) {
-			continue
-		}
-		incidentAt := incident.StartedAt
-		if incidentAt < startUnix {
-			incidentAt = startUnix
-		}
-		ratio := float64(incidentAt-startUnix) / float64(endUnix-startUnix)
-		x := left + ratio*plotWidth
-		fmt.Fprintf(&builder, "<line x1=\"%.1f\" y1=\"%.1f\" x2=\"%.1f\" y2=\"%.1f\" stroke=\"#dc2626\" stroke-width=\"1\" stroke-dasharray=\"4 3\"/>", x, top, x, height-bottom)
-	}
-
-	fmt.Fprintf(&builder, "<text x=\"%.1f\" y=\"%.1f\" fill=\"#6b7280\" font-size=\"12\">%s</text>", left, height-8, start.Format("01-02 15:04"))
-	fmt.Fprintf(&builder, "<text x=\"%.1f\" y=\"%.1f\" text-anchor=\"end\" fill=\"#6b7280\" font-size=\"12\">%s</text>", width-right, height-8, now.Format("01-02 15:04"))
-	builder.WriteString("</svg>")
-	return builder.String()
 }

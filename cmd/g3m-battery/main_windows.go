@@ -14,8 +14,24 @@ import (
 
 const pollInterval = 5 * time.Second
 
+var (
+	setProcessDpiAwarenessContext = user32IconDLL.NewProc("SetProcessDpiAwarenessContext")
+	setProcessDPIAware            = user32IconDLL.NewProc("SetProcessDPIAware")
+)
+
+func enableProcessDPIAwareness() {
+	if err := setProcessDpiAwarenessContext.Find(); err == nil {
+		const perMonitorAwareV2 = ^uintptr(3)
+		if result, _, _ := setProcessDpiAwarenessContext.Call(perMonitorAwareV2); result != 0 {
+			return
+		}
+	}
+	setProcessDPIAware.Call()
+}
+
 func main() {
 	runtime.LockOSThread()
+	enableProcessDPIAwareness()
 
 	logger := log.New(os.Stderr, "g3m-battery: ", log.LstdFlags)
 	instance, first, err := acquireSingleInstance()
@@ -45,7 +61,7 @@ func main() {
 			logger.Printf("历史记录不可用")
 			return
 		}
-		if err := history.openReport(); err != nil {
+		if err := history.openHistory(); err != nil {
 			logger.Printf("打开电量历史失败: %v", err)
 		}
 	}, func(state BatteryState) string {

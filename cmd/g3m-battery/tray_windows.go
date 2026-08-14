@@ -242,6 +242,7 @@ func (t *trayApp) run() {
 		dispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 	}
 
+	closeHistoryWindow()
 	t.unregisterDeviceNotifications()
 	t.removeIcon()
 	destroyWindow.Call(uintptr(t.hwnd))
@@ -428,7 +429,7 @@ func (t *trayApp) showMenu() {
 	appendMenuW.Call(menu, uintptr(startupFlags), menuStartup, uintptr(unsafe.Pointer(&startupText[0])))
 	refreshText, _ := syscall.UTF16FromString("立即刷新")
 	appendMenuW.Call(menu, mfString, menuRefresh, uintptr(unsafe.Pointer(&refreshText[0])))
-	historyText, _ := syscall.UTF16FromString("电量历史")
+	historyText, _ := syscall.UTF16FromString("查看电量历史")
 	appendMenuW.Call(menu, mfString, menuHistory, uintptr(unsafe.Pointer(&historyText[0])))
 	exitText, _ := syscall.UTF16FromString("退出")
 	appendMenuW.Call(menu, mfString, menuExit, uintptr(unsafe.Pointer(&exitText[0])))
