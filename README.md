@@ -110,7 +110,7 @@ flowchart TD
 %LOCALAPPDATA%\G3M Battery\history.json
 ```
 
-历史记录只保存最近 8 天。设备状态发生变化时立即记录；状态不变时最多每 5 分钟记录一次，因此不会按照 5 秒轮询频率持续写入大量重复数据。
+历史记录只保存最近 8 天。设备状态发生变化时立即记录；状态不变时最多每 5 分钟记录一次，因此不会按照 5 秒轮询频率持续写入大量重复数据。每次程序启动都会建立新的观测会话，历史计算不会把程序未运行期间跨进程连接起来。
 
 右键菜单中的“查看电量历史”会打开应用内历史窗口。窗口会显示当前状态、最后有效采样时间、数据范围、最近 24 小时或 7 天曲线、充电和放电观测，以及断连和读取失败事件：
 
@@ -157,10 +157,13 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run
 | --- | --- |
 | `cmd/g3m-battery/hid_windows.go` | 枚举 HID 接口、筛选设备、发送查询并读取响应 |
 | `cmd/g3m-battery/battery_state_windows.go` | 保存查询结果、映射连接方式、标准化充电状态和错误类型 |
-| `cmd/g3m-battery/history_windows.go` | 持久化历史采样并计算续航指标 |
-| `cmd/g3m-battery/history_window_windows.go` | 应用内历史窗口、连续曲线、状态摘要和事件视图 |
+| `cmd/g3m-battery/history_windows.go` | 历史数据结构、采样持久化和历史窗口入口 |
+| `cmd/g3m-battery/history_metrics_windows.go` | 历史连续性、充电/放电时长和续航估算 |
+| `cmd/g3m-battery/history_window_windows.go` | 应用内历史窗口生命周期、消息处理和交互 |
+| `cmd/g3m-battery/history_chart_windows.go` / `history_render_windows.go` | 历史图表和窗口绘制辅助函数 |
 | `cmd/g3m-battery/main_windows.go` | 启动托盘、定时轮询、记录历史并协调刷新消息 |
-| `cmd/g3m-battery/tray_windows.go` | 创建 Windows 隐藏窗口、托盘图标、Tooltip 和右键菜单 |
+| `cmd/g3m-battery/tray_windows.go` | 创建 Windows 隐藏窗口、托盘图标、Tooltip 和消息分发 |
+| `cmd/g3m-battery/tray_menu_windows.go` / `tray_notification_windows.go` | 托盘菜单和通知 |
 | `cmd/g3m-battery/icon_windows.go` | 根据 `BatteryState` 动态绘制电池图标 |
 | `cmd/g3m-battery/startup_windows.go` | 读写当前用户的开机启动注册表项 |
 | `cmd/g3m-battery/version_windows.go` / `cmd/g3m-battery/VERSION` | 嵌入并显示软件版本号 |
@@ -186,16 +189,18 @@ g3m-battery-windows-arm64.exe
 例如：
 
 ```text
-git tag v1.4.0
-git push origin v1.4.0
+git tag -a v1.5.0 -m "Release v1.5.0"
+git push origin main v1.5.0
 ```
+
+发布前的测试和部署约定见 [`TESTING.md`](TESTING.md) 与 [`DEPLOYMENT.md`](DEPLOYMENT.md)。
 
 ## 限制
 
 - 这是 Windows 专用程序，源码文件通过 `//go:build windows` 约束为 Windows 构建；
 - 程序只识别上面列出的 G3M Pro HID 集合，其他型号或固件版本可能需要重新确认 VID、PID、Usage 或报文字段；
 - 当前实现只查询和展示状态，不会修改鼠标配置，也不会控制充电或连接模式；
-- 开机启动记录的是当前 exe 路径，移动程序文件后需要重新设置开机启动；
+- 开机启动记录的是当前 exe 路径，移动程序文件后旧路径会被识别为失效，需要重新设置开机启动；
 - 状态字节的解释基于当前设备的协议观测结果，遇到新的原始值时会显示“状态未知”，不会静默猜测；
 - 预计剩余使用时间是基于有限历史数据的线性估算，不代表设备或厂商提供的精确续航时间；
 - 历史数据只在程序运行并成功读取设备时产生，无法补全程序未运行期间的电量变化。

@@ -14,12 +14,19 @@ HID 枚举与读取 → BatteryState → 历史记录/续航计算 → 托盘展
 
 - `cmd/g3m-battery/hid_windows.go`：枚举 HID、筛选目标设备、发送查询报文并读取响应；
 - `cmd/g3m-battery/battery_state_windows.go`：连接方式、充电状态和错误类型；
-- `cmd/g3m-battery/history_windows.go`：历史采样、异常事件、续航计算和本地报告；
+- `cmd/g3m-battery/history_windows.go`：历史数据结构、采样持久化和历史窗口入口；
+- `cmd/g3m-battery/history_metrics_windows.go`：历史连续性、充电/放电时长和续航估算；
+- `cmd/g3m-battery/history_window_windows.go`：历史窗口生命周期、消息处理和交互；
+- `cmd/g3m-battery/history_chart_windows.go`：历史曲线、充电/异常/未观测区间绘制；
+- `cmd/g3m-battery/history_render_windows.go`：历史窗口状态、事件和 GDI 绘制辅助函数；
 - `cmd/g3m-battery/main_windows.go`：监控循环、状态发布和程序生命周期；
-- `cmd/g3m-battery/tray_windows.go`：隐藏窗口、托盘菜单、设备通知；
+- `cmd/g3m-battery/tray_windows.go`：隐藏窗口、设备通知注册和消息分发；
+- `cmd/g3m-battery/tray_menu_windows.go`：托盘右键菜单和菜单动作；
+- `cmd/g3m-battery/tray_notification_windows.go`：托盘图标通知和低电量提醒；
 - `cmd/g3m-battery/icon_windows.go`：动态托盘图标；
 - `cmd/g3m-battery/startup_windows.go`：当前用户开机启动；
-- `cmd/g3m-battery/VERSION`：嵌入到程序中的版本号。
+- `cmd/g3m-battery/version_windows.go` / `cmd/g3m-battery/VERSION`：嵌入到程序中的版本号；
+- `cmd/g3m-battery/logo_windows_*.syso`：不同架构的 Windows 程序图标资源。
 
 ## 开发约定
 
@@ -28,6 +35,8 @@ HID 枚举与读取 → BatteryState → 历史记录/续航计算 → 托盘展
 - HID 协议字段和状态映射必须保持显式，遇到未确认的原始值显示未知，不要静默猜测；
 - 状态错误使用 `ErrorKind` 分类，不要在业务逻辑中解析中文错误文本；
 - 历史数据保存在 `%LOCALAPPDATA%\G3M Battery\history.json`，历史详情通过应用内窗口展示；
+- 历史数据只在当前进程会话内连接采样，进程重启后的首个采样不能跨越未运行时间参与连续计算；
+- 历史文件使用临时文件和 Windows 原子替换保存，保存失败时保留 dirty 状态并在后续采样重试；
 - 修改历史数据结构时同步更新 `historyDataVersion` 或提供迁移逻辑；
 - 续航估算必须明确标记为估算，数据不足时返回“暂无估算”；
 - 修改 Go 文件后运行 `gofmt`，并检查 `git diff --check`；
@@ -44,11 +53,13 @@ go build -trimpath -ldflags="-H=windowsgui" -o g3m-battery.exe ./cmd/g3m-battery
 发布流程：
 
 1. 将 `cmd/g3m-battery/VERSION` 改为目标版本；
-2. 使用 Conventional Commits 提交，例如 `chore: bump version to 1.4.0`；
-3. 创建带注释的版本标签，例如 `git tag -a v1.4.0 -m "Release v1.4.0"`；
-4. 推送 `main` 和对应标签，例如 `git push origin main v1.4.0`。
+2. 使用 Conventional Commits 提交，例如 `chore: bump version to 1.5.0`；
+3. 创建带注释的版本标签，例如 `git tag -a v1.5.0 -m "Release v1.5.0"`；
+4. 推送 `main` 和对应标签，例如 `git push origin main v1.5.0`。
 
 GitHub Actions 会在推送匹配 `v*.*.*` 的标签后构建 Windows amd64 和 arm64 产物并创建 Release。
+
+详细测试约定见 `TESTING.md`，发布约定见 `DEPLOYMENT.md`。
 
 ## 验收重点
 

@@ -112,16 +112,16 @@ func (s BatteryState) menuLines(remainingText string) []string {
 		if s.Percent >= 0 {
 			return append(lines,
 				fmt.Sprintf("电量：%d%%", s.Percent),
-				"连接：" + s.transportText(),
-				"状态：" + s.Error,
+				"连接："+s.transportText(),
+				"状态："+s.Error,
 			)
 		}
 		return append(lines, "G3M Pro："+s.Error)
 	}
 	return append(lines,
 		fmt.Sprintf("电量：%d%%", s.Percent),
-		"连接：" + s.transportText(),
-		"状态：" + s.chargeText(),
-		"预计剩余使用时间：" + remainingText,
+		"连接："+s.transportText(),
+		"状态："+s.chargeText(),
+		"预计剩余使用时间："+remainingText,
 	)
 }

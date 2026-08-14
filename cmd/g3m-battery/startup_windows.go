@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows/registry"
 )
@@ -25,24 +26,24 @@ func readStartupEnabled() (bool, error) {
 	}
 	defer key.Close()
 
-	_, _, err = key.GetStringValue(startupValueName)
+	value, _, err := key.GetStringValue(startupValueName)
 	if err == registry.ErrNotExist {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("读取开机启动注册表值: %w", err)
 	}
-	return true, nil
+	executable, err := currentExecutablePath()
+	if err != nil {
+		return false, err
+	}
+	return normalizeStartupPath(value) == normalizeStartupPath(executable), nil
 }
 
 func enableStartup() error {
-	executable, err := os.Executable()
+	executable, err := currentExecutablePath()
 	if err != nil {
-		return fmt.Errorf("获取可执行文件路径: %w", err)
-	}
-	executable, err = filepath.Abs(executable)
-	if err != nil {
-		return fmt.Errorf("规范化可执行文件路径: %w", err)
+		return err
 	}
 
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, startupKeyPath, registry.SET_VALUE)
@@ -55,6 +56,26 @@ func enableStartup() error {
 		return fmt.Errorf("写入开机启动注册表值: %w", err)
 	}
 	return nil
+}
+
+func currentExecutablePath() (string, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("获取可执行文件路径: %w", err)
+	}
+	executable, err = filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("规范化可执行文件路径: %w", err)
+	}
+	return executable, nil
+}
+
+func normalizeStartupPath(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) >= 2 && value[0] == '"' && value[len(value)-1] == '"' {
+		value = value[1 : len(value)-1]
+	}
+	return filepath.Clean(value)
 }
 
 func disableStartup() error {

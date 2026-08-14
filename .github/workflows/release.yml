@@ -25,6 +25,16 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Validate version
+        shell: pwsh
+        run: |
+          $fileVersion = (Get-Content cmd/g3m-battery/VERSION -Raw).Trim()
+          $tagVersion = $env:GITHUB_REF_NAME
+          $tagVersion = $tagVersion.TrimStart('v')
+          if ($fileVersion -ne $tagVersion) {
+            throw "VERSION ($fileVersion) 与 tag ($env:GITHUB_REF_NAME) 不一致"
+          }
+
       - name: Build
         shell: pwsh
         env:

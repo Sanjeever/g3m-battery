@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Checks
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          $unformatted = @(Get-ChildItem -Path cmd/g3m-battery -Filter *.go -File | ForEach-Object { gofmt -l $_.FullName })
+          if ($unformatted.Count -gt 0) {
+            $unformatted
+            throw "发现未格式化的 Go 文件"
+          }
+
+      - name: Check diff
+        shell: pwsh
+        run: git diff --check
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+  build:
+    name: Build Windows ${{ matrix.goarch }}
+    needs: checks
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        goarch: [amd64, arm64]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        shell: pwsh
+        env:
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          $env:GOOS = "windows"
+          $env:CGO_ENABLED = "0"
+          go build -trimpath -ldflags="-H=windowsgui" -o "ci-${env:GOARCH}.exe" ./cmd/g3m-battery

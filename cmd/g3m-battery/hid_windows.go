@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"sort"
 	"syscall"
+	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -31,6 +34,7 @@ const (
 	fileAttributeNormal = 0x00000080
 
 	hidpStatusSuccess = 0x00110000
+	errorNoMoreItems  = 259
 )
 
 var (
@@ -50,8 +54,6 @@ var (
 	setupDiDestroyDeviceInfoList     = setupAPIDLL.NewProc("SetupDiDestroyDeviceInfoList")
 
 	createFileW = kernel32DLL.NewProc("CreateFileW")
-	writeFile   = kernel32DLL.NewProc("WriteFile")
-	readFile    = kernel32DLL.NewProc("ReadFile")
 	closeHandle = kernel32DLL.NewProc("CloseHandle")
 )
 
@@ -112,7 +114,7 @@ func enumerateCandidates() ([]hidCandidate, error) {
 	for index := uint32(0); ; index++ {
 		var interfaceData spDeviceInterfaceData
 		interfaceData.CbSize = uint32(unsafe.Sizeof(interfaceData))
-		ok, _, _ := setupDiEnumDeviceInterfaces.Call(
+		ok, _, callErr := setupDiEnumDeviceInterfaces.Call(
 			devs,
 			0,
 			uintptr(unsafe.Pointer(&hidGUID)),
@@ -120,7 +122,10 @@ func enumerateCandidates() ([]hidCandidate, error) {
 			uintptr(unsafe.Pointer(&interfaceData)),
 		)
 		if ok == 0 {
-			break
+			if callErr == syscall.Errno(errorNoMoreItems) {
+				break
+			}
+			return nil, fmt.Errorf("SetupDiEnumDeviceInterfaces: %w", callErr)
 		}
 
 		var required uint32
@@ -239,55 +244,110 @@ func readBattery(path string) (int, byte, error) {
 		return 0, 0, fmt.Errorf("设备路径: %w", err)
 	}
 
-	handle, _, callErr := createFileW.Call(
-		uintptr(unsafe.Pointer(pathPtr)),
+	handle, err := windows.CreateFile(
+		pathPtr,
 		genericRead|genericWrite,
 		fileShareRead|fileShareWrite,
-		0,
+		nil,
 		openExisting,
-		fileAttributeNormal,
+		fileAttributeNormal|windows.FILE_FLAG_OVERLAPPED,
 		0,
 	)
-	if handle == ^uintptr(0) {
-		return 0, 0, fmt.Errorf("CreateFileW: %w", callErr)
+	if err != nil {
+		return 0, 0, fmt.Errorf("CreateFileW: %w", err)
 	}
-	defer closeHandle.Call(handle)
+	defer windows.CloseHandle(handle)
 
 	query := [queryReportLength]byte{
 		0x04, 0x20, 0x00, 0x1A, 0x06,
 	}
-	var written uint32
-	ok, _, callErr := writeFile.Call(
-		handle,
-		uintptr(unsafe.Pointer(&query[0])),
-		queryReportLength,
-		uintptr(unsafe.Pointer(&written)),
-		0,
-	)
-	if ok == 0 {
-		return 0, 0, fmt.Errorf("WriteFile: %w", callErr)
+	written, err := writeHIDReport(handle, query[:])
+	if err != nil {
+		return 0, 0, fmt.Errorf("WriteFile: %w", err)
 	}
 	if written != queryReportLength {
 		return 0, 0, fmt.Errorf("WriteFile 写入长度异常: %d", written)
 	}
 
 	var response [queryReportLength]byte
-	var read uint32
-	ok, _, callErr = readFile.Call(
-		handle,
-		uintptr(unsafe.Pointer(&response[0])),
-		queryReportLength,
-		uintptr(unsafe.Pointer(&read)),
-		0,
-	)
-	if ok == 0 {
-		return 0, 0, fmt.Errorf("ReadFile: %w", callErr)
+	read, err := readHIDReport(handle, response[:])
+	if err != nil {
+		return 0, 0, fmt.Errorf("ReadFile: %w", err)
 	}
-	if read < inputReportMinimum {
-		return 0, 0, fmt.Errorf("响应长度不足: %d", read)
+	return parseBatteryResponse(response[:read])
+}
+
+const hidIOTimeout = 2 * time.Second
+
+func writeHIDReport(handle windows.Handle, report []byte) (uint32, error) {
+	event, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return 0, fmt.Errorf("创建异步 I/O 事件: %w", err)
+	}
+	defer windows.CloseHandle(event)
+
+	overlapped := windows.Overlapped{HEvent: event}
+	var written uint32
+	err = windows.WriteFile(handle, report, &written, &overlapped)
+	if err == nil {
+		return written, nil
+	}
+	if err != windows.ERROR_IO_PENDING {
+		return 0, err
+	}
+	return completeHIDOperation(handle, &overlapped, "写入 HID 报文")
+}
+
+func readHIDReport(handle windows.Handle, response []byte) (uint32, error) {
+	event, err := windows.CreateEvent(nil, 1, 0, nil)
+	if err != nil {
+		return 0, fmt.Errorf("创建异步 I/O 事件: %w", err)
+	}
+	defer windows.CloseHandle(event)
+
+	overlapped := windows.Overlapped{HEvent: event}
+	var read uint32
+	err = windows.ReadFile(handle, response, &read, &overlapped)
+	if err == nil {
+		return read, nil
+	}
+	if err != windows.ERROR_IO_PENDING {
+		return 0, err
+	}
+	return completeHIDOperation(handle, &overlapped, "读取 HID 响应")
+}
+
+func completeHIDOperation(handle windows.Handle, overlapped *windows.Overlapped, operation string) (uint32, error) {
+	result, err := windows.WaitForSingleObject(overlapped.HEvent, uint32(hidIOTimeout/time.Millisecond))
+	if err != nil {
+		return 0, fmt.Errorf("等待%s: %w", operation, err)
+	}
+	if result == uint32(windows.WAIT_TIMEOUT) {
+		cancelErr := windows.CancelIoEx(handle, overlapped)
+		if cancelErr != nil && cancelErr != windows.ERROR_NOT_FOUND {
+			return 0, fmt.Errorf("取消%s: %w", operation, cancelErr)
+		}
+		var ignored uint32
+		_ = windows.GetOverlappedResult(handle, overlapped, &ignored, true)
+		return 0, fmt.Errorf("%s超时", operation)
+	}
+	if result != windows.WAIT_OBJECT_0 {
+		return 0, fmt.Errorf("等待%s返回未知结果: %d", operation, result)
+	}
+
+	var completed uint32
+	if err := windows.GetOverlappedResult(handle, overlapped, &completed, true); err != nil {
+		return 0, err
+	}
+	return completed, nil
+}
+
+func parseBatteryResponse(response []byte) (int, byte, error) {
+	if len(response) < inputReportMinimum {
+		return 0, 0, fmt.Errorf("响应长度不足: %d", len(response))
 	}
 	if response[0] != 0x04 || response[1] != 0x20 || response[3] != 0x1A {
-		return 0, 0, fmt.Errorf("响应头无效: % X", response[:10])
+		return 0, 0, fmt.Errorf("响应头无效: % X", response[:inputReportMinimum])
 	}
 	if response[7] == 0xFF {
 		return 0, 0, fmt.Errorf("设备返回无效数据块")

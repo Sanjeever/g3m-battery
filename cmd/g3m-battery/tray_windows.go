@@ -146,6 +146,9 @@ type trayApp struct {
 	mu                 sync.Mutex
 	current            BatteryState
 	pending            BatteryState
+	stopping           bool
+	historyError       string
+	startupError       string
 	lowBatteryNotified bool
 	startupEnabled     bool
 }
@@ -192,6 +195,7 @@ func newTray(logger *log.Logger, onRefresh, onHistory func(), onRemaining func(B
 		onRemaining:    onRemaining,
 		current:        BatteryState{Percent: -1, Error: "未连接"},
 		pending:        BatteryState{Percent: -1, Error: "未连接"},
+		startupError:   errorText(startupErr),
 		startupEnabled: startupEnabled,
 	}
 	activeTray = tray
@@ -227,7 +231,7 @@ func newTray(logger *log.Logger, onRefresh, onHistory func(), onRemaining func(B
 	return tray, nil
 }
 
-func (t *trayApp) run() {
+func (t *trayApp) run(beforeCleanup func()) {
 	var message windowsMessage
 	for {
 		ret, _, callErr := getMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
@@ -242,6 +246,12 @@ func (t *trayApp) run() {
 		dispatchMessageW.Call(uintptr(unsafe.Pointer(&message)))
 	}
 
+	if beforeCleanup != nil {
+		beforeCleanup()
+	}
+	t.mu.Lock()
+	t.stopping = true
+	t.mu.Unlock()
 	closeHistoryWindow()
 	t.unregisterDeviceNotifications()
 	t.removeIcon()
@@ -252,11 +262,43 @@ func (t *trayApp) run() {
 
 func (t *trayApp) setState(state BatteryState) {
 	t.mu.Lock()
-	t.pending = state
-	t.mu.Unlock()
-	if t.hwnd != 0 {
-		postMessageW.Call(uintptr(t.hwnd), wmTrayUpdate, 0, 0)
+	if t.stopping {
+		t.mu.Unlock()
+		return
 	}
+	t.pending = state
+	hwnd := t.hwnd
+	t.mu.Unlock()
+	if hwnd != 0 {
+		postMessageW.Call(uintptr(hwnd), wmTrayUpdate, 0, 0)
+	}
+}
+
+func (t *trayApp) setHistoryError(err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err == nil {
+		t.historyError = ""
+		return
+	}
+	t.historyError = err.Error()
+}
+
+func (t *trayApp) setStartupError(err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if err == nil {
+		t.startupError = ""
+		return
+	}
+	t.startupError = err.Error()
+}
+
+func errorText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 func (t *trayApp) applyPendingState() {
@@ -336,143 +378,6 @@ func (t *trayApp) updateIcon(state BatteryState) {
 	t.icon = icon
 	if oldIcon != 0 {
 		destroyIcon.Call(uintptr(oldIcon))
-	}
-}
-
-const lowBatteryThreshold = 20
-
-func (t *trayApp) updateLowBatteryNotification(state BatteryState) {
-	if state.Error != "" || state.Percent < 0 {
-		return
-	}
-	if state.Percent >= lowBatteryThreshold || state.Charge == ChargeCharging || state.Charge == ChargeFull {
-		t.lowBatteryNotified = false
-		return
-	}
-	if t.lowBatteryNotified {
-		return
-	}
-
-	data := t.makeNotifyData(t.icon, state.tooltip())
-	data.UFlags |= nifInfo
-	title, _ := syscall.UTF16FromString("G3M Pro 电量低")
-	info, _ := syscall.UTF16FromString(fmt.Sprintf(
-		"当前电量：%d%%，连接：%s。请及时充电。",
-		state.Percent,
-		state.transportText(),
-	))
-	copy(data.InfoTitle[:], title)
-	copy(data.Info[:], info)
-	data.InfoFlags = niifWarning
-
-	ret, _, callErr := shellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&data)))
-	if ret == 0 {
-		t.logger.Printf("Shell_NotifyIconW(NIF_INFO): %v", callErr)
-		return
-	}
-	t.lowBatteryNotified = true
-}
-
-func (t *trayApp) removeIcon() {
-	if t.icon == 0 {
-		return
-	}
-	data := t.makeNotifyData(t.icon, "")
-	shellNotifyIconW.Call(nimDelete, uintptr(unsafe.Pointer(&data)))
-	destroyIcon.Call(uintptr(t.icon))
-	t.icon = 0
-}
-
-func (t *trayApp) makeNotifyData(icon syscall.Handle, tip string) notifyIconData {
-	data := notifyIconData{
-		CbSize:           uint32(unsafe.Sizeof(notifyIconData{})),
-		HWnd:             t.hwnd,
-		UID:              1,
-		UFlags:           nifMessage | nifIcon | nifTip | nifShowTip,
-		UCallbackMessage: wmTrayIcon,
-		HIcon:            icon,
-	}
-	text, _ := syscall.UTF16FromString(tip)
-	if len(text) > len(data.Tip) {
-		text = text[:len(data.Tip)]
-	}
-	copy(data.Tip[:], text)
-	return data
-}
-
-func (t *trayApp) showMenu() {
-	t.mu.Lock()
-	state := t.current
-	t.mu.Unlock()
-
-	menu, _, callErr := createPopupMenu.Call()
-	if menu == 0 {
-		t.logger.Printf("CreatePopupMenu: %v", callErr)
-		return
-	}
-	defer destroyMenu.Call(menu)
-
-	remainingText := "暂无估算"
-	if t.onRemaining != nil {
-		remainingText = t.onRemaining(state)
-	}
-	for _, line := range state.menuLines(remainingText) {
-		text, _ := syscall.UTF16FromString(line)
-		appendMenuW.Call(menu, mfString|mfGrayed|mfDisabled, uintptr(menuRefresh+10), uintptr(unsafe.Pointer(&text[0])))
-	}
-	appendMenuW.Call(menu, mfSeparator, 0, 0)
-	startupFlags := uint32(mfString)
-	if t.startupEnabled {
-		startupFlags |= mfChecked
-	}
-	startupText, _ := syscall.UTF16FromString("开机启动")
-	appendMenuW.Call(menu, uintptr(startupFlags), menuStartup, uintptr(unsafe.Pointer(&startupText[0])))
-	refreshText, _ := syscall.UTF16FromString("立即刷新")
-	appendMenuW.Call(menu, mfString, menuRefresh, uintptr(unsafe.Pointer(&refreshText[0])))
-	historyText, _ := syscall.UTF16FromString("查看电量历史")
-	appendMenuW.Call(menu, mfString, menuHistory, uintptr(unsafe.Pointer(&historyText[0])))
-	exitText, _ := syscall.UTF16FromString("退出")
-	appendMenuW.Call(menu, mfString, menuExit, uintptr(unsafe.Pointer(&exitText[0])))
-
-	var cursor point
-	getCursorPos.Call(uintptr(unsafe.Pointer(&cursor)))
-	setForegroundWindow.Call(uintptr(t.hwnd))
-	selected, _, _ := trackPopupMenu.Call(
-		menu,
-		tpmRetCommand|tpmRightButton,
-		uintptr(cursor.X),
-		uintptr(cursor.Y),
-		0,
-		uintptr(t.hwnd),
-		0,
-	)
-	postMessageW.Call(uintptr(t.hwnd), wmNull, 0, 0)
-
-	switch uint32(selected) {
-	case menuStartup:
-		if t.startupEnabled {
-			if err := disableStartup(); err != nil {
-				t.logger.Printf("关闭开机启动失败: %v", err)
-				return
-			}
-			t.startupEnabled = false
-		} else {
-			if err := enableStartup(); err != nil {
-				t.logger.Printf("开启开机启动失败: %v", err)
-				return
-			}
-			t.startupEnabled = true
-		}
-	case menuRefresh:
-		if t.onRefresh != nil {
-			t.onRefresh()
-		}
-	case menuHistory:
-		if t.onHistory != nil {
-			t.onHistory()
-		}
-	case menuExit:
-		postQuitMessage.Call(0)
 	}
 }
 

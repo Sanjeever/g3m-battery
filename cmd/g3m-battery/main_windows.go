@@ -73,19 +73,32 @@ func main() {
 	if err != nil {
 		logger.Fatal(err)
 	}
+	if historyErr != nil {
+		tray.setHistoryError(historyErr)
+	}
 
 	publish := func(state BatteryState) {
 		if history != nil {
 			if err := history.record(state); err != nil {
 				logger.Printf("记录电量历史失败: %v", err)
+				tray.setHistoryError(err)
+			} else {
+				tray.setHistoryError(nil)
 			}
 		}
 		tray.setState(state)
 	}
-	go monitorLoop(stop, refresh, publish, logger)
+	monitorDone := make(chan struct{})
+	go monitorLoop(stop, refresh, publish, logger, monitorDone)
 
-	tray.run()
-	close(stop)
+	tray.run(func() {
+		close(stop)
+		select {
+		case <-monitorDone:
+		case <-time.After(2 * time.Second):
+			logger.Printf("监控循环未在退出超时内结束")
+		}
+	})
 }
 
 const errorAlreadyExists = 183
@@ -113,7 +126,8 @@ func acquireSingleInstance() (syscall.Handle, bool, error) {
 	return syscall.Handle(handle), true, nil
 }
 
-func monitorLoop(stop <-chan struct{}, refresh <-chan struct{}, publish func(BatteryState), logger *log.Logger) {
+func monitorLoop(stop <-chan struct{}, refresh <-chan struct{}, publish func(BatteryState), logger *log.Logger, done chan<- struct{}) {
+	defer close(done)
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
